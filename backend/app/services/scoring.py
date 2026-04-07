@@ -23,13 +23,15 @@ class HeuristicScorer:
         entities = self._entity_score(source_text, candidate_text)
         length = self._length_score(source_text, candidate_text)
         target_script = self._script_score(candidate_text, target_language)
+        tonality = self._tonality_score(source_text, candidate_text, source_language, target_language)
         confidence_score = max(0.0, min(confidence, 1.0))
         total = round(
-            0.22 * punctuation
-            + 0.2 * entities
-            + 0.18 * length
-            + 0.28 * target_script
-            + 0.12 * confidence_score,
+            0.2 * punctuation
+            + 0.18 * entities
+            + 0.15 * length
+            + 0.22 * target_script
+            + 0.15 * tonality
+            + 0.1 * confidence_score,
             4,
         )
         return CandidateScore(
@@ -37,6 +39,7 @@ class HeuristicScorer:
             entities=round(entities, 4),
             length=round(length, 4),
             target_script=round(target_script, 4),
+            tonality=round(tonality, 4),
             confidence=round(confidence_score, 4),
             total=total,
         )
@@ -113,6 +116,66 @@ class HeuristicScorer:
             if any(start <= codepoint <= end for (start, end) in ranges):
                 matches += 1
         return matches / len(letters)
+
+    def _tonality_score(self, source_text: str, candidate_text: str, source_language: str, target_language: str) -> float:
+        if not candidate_text.strip():
+            return 0.0
+
+        source_profile = self._tone_profile(source_text, source_language)
+        candidate_profile = self._tone_profile(candidate_text, target_language)
+
+        return round(
+            0.2 * self._feature_similarity(source_profile["exclamation"], candidate_profile["exclamation"])
+            + 0.2 * self._feature_similarity(source_profile["question"], candidate_profile["question"])
+            + 0.15 * self._feature_similarity(source_profile["ellipsis"], candidate_profile["ellipsis"])
+            + 0.15 * self._feature_similarity(source_profile["uppercase"], candidate_profile["uppercase"])
+            + 0.1 * self._feature_similarity(source_profile["emoji"], candidate_profile["emoji"])
+            + 0.2 * self._feature_similarity(source_profile["politeness"], candidate_profile["politeness"]),
+            4,
+        )
+
+    def _tone_profile(self, text: str, language: str) -> dict[str, float]:
+        exclamation = min(1.0, text.count("!") / 3.0)
+        question = min(1.0, text.count("?") / 3.0)
+        ellipsis = min(1.0, (text.count("...") + text.count("…")) / 2.0)
+
+        upper_tokens = re.findall(r"\b[A-Z]{2,}\b", text)
+        ascii_tokens = re.findall(r"\b[A-Za-z]{2,}\b", text)
+        uppercase = len(upper_tokens) / max(len(ascii_tokens), 1)
+        uppercase = max(0.0, min(1.0, uppercase))
+
+        emoji = min(1.0, len(re.findall(r"[\U0001F300-\U0001FAFF]", text)) / 3.0)
+        politeness = self._politeness_score(text, language)
+
+        return {
+            "exclamation": exclamation,
+            "question": question,
+            "ellipsis": ellipsis,
+            "uppercase": uppercase,
+            "emoji": emoji,
+            "politeness": politeness,
+        }
+
+    def _politeness_score(self, text: str, language: str) -> float:
+        lexicon = {
+            "en": ["please", "kindly", "thanks", "thank you", "sorry"],
+            "hi": ["कृपया", "धन्यवाद", "माफ", "जी"],
+            "kn": ["ದಯವಿಟ್ಟು", "ಧನ್ಯವಾದ", "ಕ್ಷಮಿಸಿ"],
+            "ta": ["தயவு செய்து", "நன்றி", "மன்னிக்கவும்"],
+            "ml": ["ദയവായി", "നന്ദി", "ക്ഷമിക്കണം"],
+            "te": ["దయచేసి", "ధన్యవాదాలు", "క్షమించండి"],
+        }
+        terms = lexicon.get(language, [])
+        if not terms:
+            return 0.5
+
+        text_norm = text.lower()
+        hits = sum(1 for term in terms if term.lower() in text_norm)
+        return min(1.0, hits / 2.0)
+
+    def _feature_similarity(self, source_value: float, candidate_value: float) -> float:
+        scale = max(1.0, source_value, candidate_value)
+        return max(0.0, 1.0 - abs(source_value - candidate_value) / scale)
 
 
 class CandidateSelector:

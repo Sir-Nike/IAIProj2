@@ -14,6 +14,7 @@ type CandidateBreakdown = {
   entities: number
   length: number
   target_script: number
+  tonality: number
   confidence: number
   total: number
 }
@@ -355,6 +356,10 @@ function App() {
                 <div className="mini-card">
                   <span>Target script</span>
                   <strong>{Math.round(response.selected_candidate.breakdown.target_script * 100)}%</strong>
+                </div>
+                <div className="mini-card">
+                  <span>Tonality</span>
+                  <strong>{Math.round(response.selected_candidate.breakdown.tonality * 100)}%</strong>
                 </div>
               </div>
             </>

@@ -17,6 +17,7 @@ class CandidateScore(BaseModel):
     entities: float
     length: float
     target_script: float
+    tonality: float
     confidence: float
     total: float
 

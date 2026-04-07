@@ -92,6 +92,8 @@ class TranslationPipeline:
             notes.append("Entity handling needs improvement")
         if score.punctuation < 0.5:
             notes.append("Punctuation drift detected")
+        if score.tonality < 0.5:
+            notes.append("Tone alignment is low")
         if score.target_script < 0.5:
             notes.append("Target script coverage is low")
         if confidence < 0.5:
@@ -106,6 +108,7 @@ class TranslationPipeline:
             entities=1.0,
             length=1.0,
             target_script=1.0,
+            tonality=1.0,
             confidence=1.0,
             total=1.0,
         )
