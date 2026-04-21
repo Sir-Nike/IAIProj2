@@ -12,6 +12,10 @@ class AppSettings:
     use_safetensors: bool = True
     use_hf_transfer: bool = True
     require_local_model_files: bool = True
+    enable_semantic_similarity: bool = True
+    semantic_model_id: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    enable_model_tonality: bool = True
+    tonality_model_id: str = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
     hf_token_env_var: str = "HF_TOKEN"
     hf_cache_dir: str = str(Path(__file__).resolve().parents[3] / ".hf-cache")
     offload_dir: str = str(Path(__file__).resolve().parents[3] / ".offload")

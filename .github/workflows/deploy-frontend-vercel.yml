@@ -22,6 +22,19 @@ jobs:
         with:
           node-version: 20
 
+      - name: Validate Vercel secrets
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.VERCEL_TOKEN }}" ]; then
+            echo "::error::VERCEL_TOKEN secret is missing. Add it in GitHub repository settings before rerunning this workflow."
+            exit 1
+          fi
+
+          if [ -z "${{ secrets.VITE_API_BASE_URL }}" ]; then
+            echo "::error::VITE_API_BASE_URL secret is missing. Add it in GitHub repository settings before rerunning this workflow."
+            exit 1
+          fi
+
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 

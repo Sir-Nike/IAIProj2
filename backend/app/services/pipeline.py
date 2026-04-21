@@ -90,10 +90,12 @@ class TranslationPipeline:
         notes: list[str] = []
         if score.entities < 0.5:
             notes.append("Entity handling needs improvement")
-        if score.punctuation < 0.5:
-            notes.append("Punctuation drift detected")
         if score.tonality < 0.5:
             notes.append("Tone alignment is low")
+        if score.semantic < 0.5:
+            notes.append("Semantic alignment is low")
+        if score.fluency < 0.5:
+            notes.append("Fluency degradation detected")
         if score.target_script < 0.5:
             notes.append("Target script coverage is low")
         if confidence < 0.5:
@@ -104,11 +106,12 @@ class TranslationPipeline:
 
     def _make_identity_candidate(self, text: str) -> ScoredText:
         score = CandidateScore(
-            punctuation=1.0,
             entities=1.0,
             length=1.0,
             target_script=1.0,
             tonality=1.0,
+            semantic=1.0,
+            fluency=1.0,
             confidence=1.0,
             total=1.0,
         )

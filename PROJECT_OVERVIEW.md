@@ -1,263 +1,775 @@
 # Project Overview
 
-## 1. What This Project Is
+This document is written as a technical handoff for LLMs. It explains the current implementation in terms of real code flow, object responsibilities, and the data contracts between files.
 
-This repository contains a multilingual translation web application.
+If you want a short reading order:
 
-The system has two major parts:
+1. Read [1. System Summary](#1-system-summary).
+2. Read [2. End-to-End Request Flow](#2-end-to-end-request-flow).
+3. Read [3. Backend Internals](#3-backend-internals).
+4. Read [4. Heuristic Scoring Model](#4-heuristic-scoring-model).
+5. Read [5. Frontend Internals](#5-frontend-internals).
+6. Read [6. Single-Command Launcher](#6-single-command-launcher).
 
-- A FastAPI backend that loads a pretrained Hugging Face translation model and exposes API endpoints.
-- A React + TypeScript frontend that sends translation requests and displays the result, alternative candidates, and quality diagnostics.
+## 1. System Summary
 
-The project is inference-first rather than training-first. It does not train a base model from scratch. Instead, it improves practical output quality by generating multiple candidate translations, scoring them with heuristics, and selecting the best result.
+This repository is a multilingual translation application with two runtime layers:
 
-## 2. Supported Languages
+- A FastAPI backend that loads `google/translategemma-4b-it`, generates several candidate translations, scores them, and returns the best result plus diagnostics.
+- A React + TypeScript frontend that collects user input, sends translation requests, renders the candidate outputs, and lets the user click a candidate to inspect its heuristic breakdown.
 
-The project currently supports six languages:
+The project is inference-first. It does not train a translation model. It uses candidate generation plus heuristic reranking to choose a result that is more likely to be usable.
 
-- English (`en`)
-- Hindi (`hi`)
-- Kannada (`kn`)
-- Tamil (`ta`)
-- Malayalam (`ml`)
-- Telugu (`te`)
-
-The system supports any-to-any translation between these languages.
-
-## 3. Top-Level Folder Structure
-
-### Repository root
-
-- `README.md` - main usage and deployment guide.
-- `docker-compose.yml` - runs backend and frontend together.
-- `deploy/` - Nginx config for serving the frontend and proxying API calls.
-- `.github/workflows/` - automation for publishing images and deploying the frontend.
-- `backend/` - Python API, model loading, translation pipeline, and scoring logic.
-- `frontend/` - React application for the user interface.
-- `Tentative UG Course Plan - AI Theory_CSS2203.pdf` - course plan reference.
-- `Guidelines for IAI Project Work (A3 and A4)_10M.pdf` - assignment guideline reference.
-
-### Runtime and generated folders
-
-- `.venv/` - local Python virtual environment.
-- `.hf-cache/` - Hugging Face model cache and downloaded artifacts.
-- `.offload/` - model offload directory for memory-constrained inference.
-- `backend/logs/` - logs produced by the model download script.
-
-## 4. Backend Structure
-
-The backend is organized as a small FastAPI application with a service layer.
-
-### `backend/app/main.py`
-
-This is the API entrypoint.
-
-It performs these tasks:
-
-- Creates the FastAPI app.
-- Configures CORS so the frontend can call the backend.
-- Instantiates the translation pipeline once at startup.
-- Exposes health, language list, and translation endpoints.
-
-### `backend/app/core/settings.py`
-
-This file holds application settings.
-
-It defines:
-
-- Application name.
-- API prefix.
-- Model ID.
-- Hugging Face cache and offload paths.
-- Whether model downloading is enabled.
-- Whether safetensors and HF Transfer are used.
-- Allowed frontend origins for CORS.
-
-### `backend/app/core/schemas.py`
-
-This file defines the request and response shapes for the API.
-
-Important models:
-
-- `TranslationRequest` - input from the frontend.
-- `CandidateScore` - per-candidate quality breakdown.
-- `TranslationCandidate` - one candidate translation.
-- `TranslationResponse` - the final API response.
-- `HealthResponse` - runtime/model health information.
-
-### `backend/app/core/language.py`
-
-This file stores metadata for the supported languages.
-
-It provides:
-
-- Language codes and display labels.
-- NLLB-style metadata codes.
-- Script identifiers.
-- Helper methods for checking support and forming pair labels.
-
-### `backend/app/services/text_processing.py`
-
-This file normalizes input text before translation.
-
-It removes inconsistent whitespace, normalizes line breaks, and adjusts punctuation spacing.
-
-### `backend/app/services/model_adapter.py`
-
-This file is the model wrapper.
-
-It handles:
-
-- Hugging Face token lookup.
-- Cache/offload preparation.
-- Verification that model artifacts exist locally.
-- Loading the pretrained translation model and processor.
-- Running generation with different decoding strategies.
-- Estimating confidence from generation scores.
-
-The adapter currently uses `google/translategemma-4b-it`.
-
-### `backend/app/services/scoring.py`
-
-This file scores candidate translations.
-
-It evaluates each candidate using:
-
-- punctuation preservation
-- protected token preservation
-- length similarity
-- target script coverage
-- tonality similarity
-- confidence from generation
-
-The final score is a weighted combination of those signals.
-
-### `backend/app/services/pipeline.py`
-
-This file orchestrates the translation process.
-
-It does the following:
-
-1. Normalizes the input text.
-2. Selects a routing profile based on source and target languages.
-3. Generates multiple candidates using different decoding strategies.
-4. Scores the candidates.
-5. Selects the best one.
-6. If the score is weak, retries with a stricter generation profile.
-7. Returns the selected translation plus all candidate diagnostics.
-
-### `backend/scripts/download_translategemma.py`
-
-This is a build-time utility script.
-
-Its job is to download and verify the model artifacts ahead of runtime so the Docker image can start without a first-run model download.
-
-It also:
-
-- Uses a lock file so only one download runs at a time.
-- Logs progress and throughput.
-- Downloads metadata and safetensor shards in staged phases.
-- Verifies that required files are present at the end.
-
-### Package marker files
-
-- `backend/app/__init__.py`
-- `backend/app/core/__init__.py`
-- `backend/app/services/__init__.py`
-
-These only mark the directories as Python packages and contain no runtime logic.
-
-## 5. Backend Runtime Flow
-
-The backend translation flow is:
-
-1. The frontend sends text and language codes to `POST /api/translate`.
-2. `main.py` forwards the request to the translation pipeline.
-3. The pipeline normalizes the text.
-4. The model adapter generates multiple outputs using different strategies.
-5. The scorer evaluates each output.
-6. The selector picks the strongest candidate.
-7. The pipeline returns the final translation and diagnostics.
-
-If the input source and target languages are the same, the pipeline returns the original text as an identity result.
-
-## 6. Frontend Structure
-
-The frontend is a React + TypeScript application built with Vite.
-
-### `frontend/src/main.tsx`
-
-This is the React bootstrap file.
-
-It mounts the app into the root DOM node.
-
-### `frontend/src/App.tsx`
-
-This is the main UI and application state file.
-
-It manages:
-
-- theme state
-- selected source and target languages
-- input text
-- translation response data
-- backend health data
-- loading and error state
-
-It also:
-
-- fetches `/api/health` on load
-- sends translation requests to `/api/translate`
-- displays the selected candidate, all alternatives, and score breakdowns
-- lets the user swap languages
-- stores the theme in localStorage
-
-### `frontend/src/App.css`
-
-This file contains the full visual design.
-
-It defines:
-
-- light and dark theme variables
-- cards, panels, and layout grids
-- form controls and buttons
-- status badges
-- candidate cards and score breakdown sections
-- responsive behavior for desktop and mobile
-
-### `frontend/src/index.css`
-
-This is the global CSS baseline.
-
-It sets:
-
-- the default font stack
-- page background
-- box sizing
-- root sizing rules
-
-## 7. Frontend Runtime Flow
-
-The frontend flow is:
-
-1. Load the page.
-2. Fetch backend health information.
-3. Let the user pick source and target languages.
-4. Let the user enter text.
-5. Send the request to the backend.
-6. Show the best translation, other candidates, and diagnostic scores.
-
-The UI is intentionally diagnostic rather than minimal, because it exposes why a translation was selected.
-
-## 8. Dependency Stack
-
-### Backend dependencies
-
-From `backend/requirements.txt`:
-
-- `fastapi`
-- `uvicorn`
-- `pydantic`
+The system currently supports these languages:
+
+- `en` - English
+- `hi` - Hindi
+- `kn` - Kannada
+- `ta` - Tamil
+- `ml` - Malayalam
+- `te` - Telugu
+
+## 2. End-to-End Request Flow
+
+The current runtime path is:
+
+1. The user types text in the frontend.
+2. The frontend sends a POST request to `/api/translate`.
+3. The backend validates the request with Pydantic.
+4. The translation pipeline normalizes input text.
+5. The pipeline selects a routing profile for the language pair.
+6. The model adapter generates multiple candidate translations using different decoding strategies.
+7. The heuristic scorer scores each candidate on semantic quality and preservation signals.
+8. The candidate with the best total score is selected.
+9. If the best score is too weak, the pipeline retries with a stricter generation profile.
+10. The backend returns the selected translation, all candidates, and per-candidate breakdowns.
+11. The frontend highlights the best output and shows the heuristic breakdown when the user clicks any output card.
+
+The important design detail is that the UI now shows only two things:
+
+- input controls
+- generated outputs
+
+## 3. Backend Internals
+
+### 3.1 API entrypoint: `backend/app/main.py`
+
+This file creates the FastAPI app, registers CORS, instantiates the pipeline once, and exposes the API endpoints.
+
+```python
+app = FastAPI(title=settings.app_name)
+
+app.add_middleware(
+	CORSMiddleware,
+	allow_origins=list(settings.cors_origins),
+	allow_credentials=True,
+	allow_methods=["*"],
+	allow_headers=["*"],
+)
+
+pipeline = TranslationPipeline()
+registry = LanguageRegistry()
+```
+
+What this means:
+
+- The app title comes from settings.
+- CORS is permissive only for the configured frontend origins.
+- `TranslationPipeline()` is created once and reused for all requests.
+- `LanguageRegistry()` is also created once and used for language metadata and pair labels.
+
+The health route returns model/runtime status:
+
+```python
+@app.get("/api/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+	return HealthResponse(
+		status="ok",
+		model_status=pipeline.adapter.status,
+		mode=pipeline.adapter.mode,
+		safetensors=settings.use_safetensors,
+		hf_transfer=settings.use_hf_transfer,
+	)
+```
+
+This endpoint is useful for both the UI and deployment checks. It does not generate translations; it only reports whether the model adapter has a valid status string.
+
+The translation endpoint is a thin wrapper around the pipeline:
+
+```python
+@app.post("/api/translate", response_model=TranslationResponse)
+def translate(request: TranslationRequest) -> TranslationResponse:
+	try:
+		return pipeline.translate(request)
+	except KeyError as exc:
+		raise HTTPException(status_code=400, detail=str(exc)) from exc
+	except RuntimeError as exc:
+		raise HTTPException(status_code=503, detail=str(exc)) from exc
+```
+
+This endpoint does not itself translate text. It delegates all decision-making to the pipeline and only converts expected failures into HTTP responses.
+
+### 3.2 Runtime settings: `backend/app/core/settings.py`
+
+The settings object centralizes model, cache, and feature flags.
+
+```python
+@dataclass(frozen=True)
+class AppSettings:
+	app_name: str = "Indian Multilingual Translation API"
+	api_prefix: str = "/api"
+	enable_model_download: bool = True
+	model_mode: str = "translategemma-image-text-to-text"
+	model_id: str = "google/translategemma-4b-it"
+	use_safetensors: bool = True
+	use_hf_transfer: bool = True
+	require_local_model_files: bool = True
+	enable_semantic_similarity: bool = True
+	semantic_model_id: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+	enable_model_tonality: bool = True
+	tonality_model_id: str = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+	hf_token_env_var: str = "HF_TOKEN"
+	hf_cache_dir: str = str(Path(__file__).resolve().parents[3] / ".hf-cache")
+	offload_dir: str = str(Path(__file__).resolve().parents[3] / ".offload")
+	max_input_chars: int = 5000
+	cors_origins: tuple[str, ...] = (
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+	)
+```
+
+The important part here is that the backend has three model-level systems:
+
+- the translation model (`model_id`)
+- the semantic scorer (`semantic_model_id`)
+- the tonality model (`tonality_model_id`)
+
+### 3.3 Schema definitions: `backend/app/core/schemas.py`
+
+These are the exact API contracts.
+
+```python
+class TranslationRequest(BaseModel):
+	text: str = Field(min_length=1, max_length=5000)
+	source_language: str = Field(pattern="^(en|hi|kn|ta|ml|te)$")
+	target_language: str = Field(pattern="^(en|hi|kn|ta|ml|te)$")
+	max_candidates: int = Field(default=3, ge=1, le=5)
+```
+
+The request validation does three things:
+
+- ensures the text is not empty
+- limits the length to 5000 characters
+- restricts language codes to the supported set
+- restricts candidate count to 1 through 5
+
+The score breakdown is now model-centric and no longer includes punctuation:
+
+```python
+class CandidateScore(BaseModel):
+	entities: float
+	length: float
+	target_script: float
+	tonality: float
+	semantic: float
+	fluency: float
+	confidence: float
+	total: float
+```
+
+That means the UI and API now focus on higher-signal metrics rather than punctuation drift.
+
+The translation response contains both the selected candidate and all candidates:
+
+```python
+class TranslationResponse(BaseModel):
+	source_language: str
+	target_language: str
+	pair_label: str
+	input_text: str
+	selected_candidate: TranslationCandidate
+	candidates: list[TranslationCandidate]
+	model_status: str
+	retry_used: bool
+	diagnostics: dict[str, Any]
+```
+
+### 3.4 Translation pipeline: `backend/app/services/pipeline.py`
+
+This file decides what to generate, how to rank it, and when to retry.
+
+The routing layer is extremely small:
+
+```python
+class LanguagePairRouter:
+	def route(self, source_language: str, target_language: str) -> PairRouting:
+		if source_language == "en" or target_language == "en":
+			return PairRouting(prompt_profile="faithful", retry_profile="strict")
+		return PairRouting(prompt_profile="balanced", retry_profile="strict")
+```
+
+This means English-involved pairs are treated as more literal, while non-English pairs use the balanced prompt profile.
+
+The translate method is the top-level orchestration:
+
+```python
+def translate(self, request: TranslationRequest) -> TranslationResponse:
+	if request.source_language == request.target_language:
+		candidate = self._make_identity_candidate(request.text)
+		return self._build_response(request, [candidate], candidate, retry_used=False)
+
+	normalized = self.preprocessor.normalize(request.text)
+	routing = self.router.route(request.source_language, request.target_language)
+	candidates = self._generate_candidates(
+		normalized,
+		request.source_language,
+		request.target_language,
+		routing.prompt_profile,
+		request.max_candidates,
+	)
+	selected = self.selector.select(candidates)
+
+	retry_used = False
+	if selected.score.total < 0.58:
+		retry_used = True
+		retry_candidates = self._generate_candidates(
+			normalized,
+			request.source_language,
+			request.target_language,
+			routing.retry_profile,
+			request.max_candidates,
+		)
+		candidates.extend(retry_candidates)
+		selected = self.selector.select(candidates)
+
+	return self._build_response(request, candidates, selected, retry_used)
+```
+
+That function does all of the following:
+
+- short-circuits same-language requests as identity results
+- normalizes input text before translation
+- generates candidates with the main profile
+- selects the best candidate using total score
+- retries with a stricter profile if the score is too weak
+- returns the whole response object with diagnostics
+
+Candidate generation is strategy-based:
+
+```python
+strategy_map = {
+	"faithful": ["greedy", "beam", "sample"],
+	"balanced": ["beam", "greedy", "sample"],
+	"strict": ["strict", "beam", "greedy"],
+}
+```
+
+This matters because the backend is not relying on one decoding mode. It intentionally asks the model to produce several outputs so the heuristic layer can choose the best one.
+
+Each candidate is scored immediately after generation:
+
+```python
+translated, confidence = self.adapter.translate(text, source_language, target_language, strategy)
+score = self.scorer.score(text, translated, source_language, target_language, confidence)
+notes = self._build_notes(score, confidence)
+```
+
+The notes are only diagnostic labels. They are not used for ranking:
+
+```python
+if score.entities < 0.5:
+	notes.append("Entity handling needs improvement")
+if score.tonality < 0.5:
+	notes.append("Tone alignment is low")
+if score.semantic < 0.5:
+	notes.append("Semantic alignment is low")
+if score.fluency < 0.5:
+	notes.append("Fluency degradation detected")
+if score.target_script < 0.5:
+	notes.append("Target script coverage is low")
+```
+
+The selected response is assembled in `_build_response`:
+
+```python
+candidate_models = [
+	TranslationCandidate(
+		candidate_id=item.candidate_id,
+		strategy=item.strategy,
+		text=item.text,
+		confidence=item.confidence,
+		score=item.score.total,
+		breakdown=item.score,
+		notes=item.notes,
+	)
+	for item in candidates
+]
+```
+
+That means the API returns one object for each generated candidate, not just the winner.
+
+### 3.5 Model adapter: `backend/app/services/model_adapter.py`
+
+The model adapter is the only layer that talks directly to Hugging Face Transformers.
+
+Its responsibilities are:
+
+- resolve the HF token
+- prepare cache/offload directories
+- check for local artifacts
+- load the model/processor bundle
+- generate text with different strategies
+- estimate confidence from output token scores
+
+The core loader flow is:
+
+```python
+def _load_model(self) -> Any:
+	if self._model_bundle is not None:
+		return self._model_bundle
+
+	self._prepare_hf_runtime()
+	model_id = settings.model_id
+	if not settings.enable_model_download:
+		self._status = (
+			f"download disabled; model unavailable "
+			f"(mode={settings.model_mode}, model={model_id})"
+		)
+		return None
+
+	if settings.require_local_model_files and not self._has_local_artifacts(model_id):
+		self._status = (
+			f"model artifacts not ready locally for {model_id}; "
+			"cannot run translation until artifacts are present"
+		)
+		return None
+
+	try:
+		if settings.model_mode == "translategemma-image-text-to-text":
+			self._model_bundle = self._load_translategemma_bundle(model_id)
+			return self._model_bundle
+		raise ValueError(f"Unsupported model mode: {settings.model_mode}")
+	except Exception as exc:
+		self._status = (
+			f"model load failure "
+			f"(mode={settings.model_mode}, error={exc.__class__.__name__}: {exc})"
+		)
+		return None
+```
+
+The actual generation logic varies by strategy:
+
+```python
+generation_args: dict[str, Any] = {
+	"max_new_tokens": 256,
+	"return_dict_in_generate": True,
+	"output_scores": True,
+}
+if strategy == "beam":
+	generation_args.update({"num_beams": 3, "repetition_penalty": 1.08})
+elif strategy == "sample":
+	generation_args.update({"do_sample": True, "top_p": 0.92, "temperature": 0.75})
+elif strategy == "strict":
+	generation_args.update({"num_beams": 4, "length_penalty": 1.0, "repetition_penalty": 1.1})
+else:
+	generation_args.update({"num_beams": 1})
+```
+
+This is why the backend can produce several candidate outputs with meaningfully different behavior.
+
+Confidence is estimated from the model’s generated token distributions:
+
+```python
+def _estimate_confidence(self, scores: list[Any]) -> float:
+	try:
+		import torch
+
+		if not scores:
+			return 0.5
+		confidences: list[float] = []
+		for step_scores in scores:
+			probabilities = torch.softmax(step_scores[0], dim=-1)
+			confidences.append(float(probabilities.max().item()))
+		return max(0.05, min(0.98, sum(confidences) / len(confidences)))
+	except Exception:
+		return 0.5
+```
+
+That confidence value is not a semantic guarantee. It is just a generation-level proxy used as one input to ranking.
+
+## 4. Heuristic Scoring Model
+
+This is the most important file for understanding why a candidate wins.
+
+### 4.1 The scorer classes
+
+The scoring module now has three major pieces:
+
+- `SemanticSimilarityScorer`
+- `TonalityModelScorer`
+- `HeuristicScorer`
+
+`SemanticSimilarityScorer` uses a multilingual embedding model:
+
+```python
+tokenizer = AutoTokenizer.from_pretrained(
+	settings.semantic_model_id,
+	cache_dir=settings.hf_cache_dir,
+)
+model = AutoModel.from_pretrained(
+	settings.semantic_model_id,
+	cache_dir=settings.hf_cache_dir,
+)
+```
+
+The text is encoded, pooled, L2-normalized, and then compared by dot product.
+
+`TonalityModelScorer` uses a sentiment model instead of a word-list heuristic:
+
+```python
+tokenizer = AutoTokenizer.from_pretrained(
+	settings.tonality_model_id,
+	cache_dir=settings.hf_cache_dir,
+	use_fast=False,
+)
+model = AutoModelForSequenceClassification.from_pretrained(
+	settings.tonality_model_id,
+	cache_dir=settings.hf_cache_dir,
+)
+```
+
+The slow tokenizer path is intentional because the environment previously hit a protobuf dependency issue with the fast tokenizer path.
+
+### 4.2 What the final score means
+
+The current score is a weighted sum over seven features:
+
+```python
+weighted_features = {
+	"entities": entities,
+	"length": length,
+	"target_script": target_script,
+	"tonality": tonality,
+	"semantic": semantic,
+	"fluency": fluency,
+	"confidence": confidence_score,
+}
+total = round(
+	sum(self._weights[key] * weighted_features[key] for key in self._weights),
+	4,
+)
+```
+
+Current weights:
+
+```python
+self._weights = {
+	"entities": 0.20,
+	"length": 0.08,
+	"target_script": 0.17,
+	"tonality": 0.15,
+	"semantic": 0.27,
+	"fluency": 0.09,
+	"confidence": 0.04,
+}
+```
+
+Interpretation:
+
+- `semantic` gets the largest weight because meaning preservation is the strongest signal.
+- `entities` matters because names, URLs, numbers, and handles should not be lost.
+- `target_script` matters because output should be in the expected writing system.
+- `tonality` matters because the output should preserve sentiment or tone.
+- `fluency` catches repetition and noisy outputs.
+- `confidence` is the weakest signal because model confidence alone is not enough to rank translations.
+
+### 4.3 Why punctuation is not part of the score anymore
+
+Earlier versions had a punctuation metric. That was removed because it was too surface-level and not useful enough compared with semantic and fluency signals.
+
+That is why `CandidateScore` no longer includes punctuation.
+
+### 4.4 Entity handling
+
+The entity score combines two ideas:
+
+- strict entity preservation for emails, URLs, handles, hashtags, and numbers
+- fuzzy preservation for capitalized names and title-like tokens
+
+The key logic is:
+
+```python
+strict_entities = self._extract_strict_entities(source_text)
+named_entities = self._extract_named_entities(source_text)
+
+strict_score = self._preservation_ratio(strict_entities, candidate_text, use_fuzzy=False)
+named_score = self._preservation_ratio(named_entities, candidate_text, use_fuzzy=True)
+```
+
+This is more useful than checking only exact string matches because translations may transliterate names or slightly reshape tokens.
+
+### 4.5 Fluency scoring
+
+The fluency score is a lightweight noise detector.
+
+```python
+tokens = re.findall(r"\w+", candidate_text, flags=re.UNICODE)
+unique_ratio = len(set(lowered)) / len(lowered)
+consecutive_repeats = sum(1 for index in range(1, len(lowered)) if lowered[index] == lowered[index - 1])
+stretched_chars = len(re.findall(r"(.)\1{3,}", candidate_text))
+punct_bursts = len(re.findall(r"[!?.,]{3,}", candidate_text))
+```
+
+This catches outputs that look repetitive, noisy, or collapsed.
+
+### 4.6 The score output contract
+
+The final schema returned by the scorer is now:
+
+```python
+class CandidateScore(BaseModel):
+	entities: float
+	length: float
+	target_script: float
+	tonality: float
+	semantic: float
+	fluency: float
+	confidence: float
+	total: float
+```
+
+So when the frontend clicks a candidate, this is the breakdown it can show.
+
+## 5. Frontend Internals
+
+The frontend has been simplified into two visual regions:
+
+- input panel
+- output panel
+
+### 5.1 UI state in `frontend/src/App.tsx`
+
+Core state:
+
+```tsx
+const [sourceLanguage, setSourceLanguage] = useState<LanguageCode>('en')
+const [targetLanguage, setTargetLanguage] = useState<LanguageCode>('hi')
+const [text, setText] = useState(sampleText)
+const [response, setResponse] = useState<TranslationResponse | null>(null)
+const [activeCandidateId, setActiveCandidateId] = useState<string | null>(null)
+const [loading, setLoading] = useState(false)
+const [error, setError] = useState<string | null>(null)
+```
+
+This means the component directly owns the translation inputs, the result payload, and the currently inspected candidate.
+
+### 5.2 Sending a translation request
+
+```tsx
+const translateText = async () => {
+  setLoading(true)
+  setError(null)
+
+  try {
+	const response = await fetch(apiUrl('/api/translate'), {
+	  method: 'POST',
+	  headers: {
+		'Content-Type': 'application/json',
+	  },
+	  body: JSON.stringify({
+		text,
+		source_language: sourceLanguage,
+		target_language: targetLanguage,
+		max_candidates: 3,
+	  }),
+	})
+
+	if (!response.ok) {
+	  const payload = (await response.json().catch(() => null)) as { detail?: string } | null
+	  throw new Error(payload?.detail ?? 'Translation request failed')
+	}
+
+	const data = (await response.json()) as TranslationResponse
+	setResponse(data)
+	setActiveCandidateId(data.selected_candidate.candidate_id)
+  } catch (err) {
+	setError(err instanceof Error ? err.message : 'Something went wrong')
+  } finally {
+	setLoading(false)
+  }
+}
+```
+
+This is the only place the frontend talks to the backend for translation.
+
+### 5.3 Highlighting the best output
+
+The best output is the backend-selected candidate:
+
+```tsx
+const isBest = candidate.candidate_id === response.selected_candidate.candidate_id
+```
+
+The output card gets a special class when it is the winner:
+
+```tsx
+className={['candidate-card', isBest ? 'best' : '', isActive ? 'active' : ''].filter(Boolean).join(' ')}
+```
+
+Meaning:
+
+- `best` = selected by backend score
+- `active` = clicked by the user
+
+The UI intentionally separates these concepts.
+
+### 5.4 Clicking a candidate to inspect the breakdown
+
+```tsx
+<button
+  key={candidate.candidate_id}
+  type="button"
+  className={className}
+  onClick={() => setActiveCandidateId(candidate.candidate_id)}
+>
+```
+
+That click does not re-run inference. It only changes which existing candidate is being inspected in the breakdown panel.
+
+The active candidate is derived with `useMemo`:
+
+```tsx
+const activeCandidate = useMemo(() => {
+  if (!response) {
+	return null
+  }
+  const fallback = response.selected_candidate
+  if (!activeCandidateId) {
+	return fallback
+  }
+  return response.candidates.find((candidate) => candidate.candidate_id === activeCandidateId) ?? fallback
+}, [response, activeCandidateId])
+```
+
+So the breakdown panel always shows a candidate from the current response, falling back to the best-scoring candidate if needed.
+
+### 5.5 What the frontend now shows
+
+The page no longer tries to show extra meta cards or backend health text. It shows only:
+
+- language selection
+- input text box
+- generate button
+- candidate cards
+- clickable heuristic breakdown
+
+This matches your request to keep the page focused on input and outputs.
+
+## 6. Single-Command Launcher
+
+The launcher script is `run-website.ps1`.
+
+```powershell
+Import-EnvFile (Join-Path $projectRoot '.env.local')
+Import-EnvFile (Join-Path $projectRoot '.env')
+
+$backendConnection = Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -First 1
+$frontendConnection = Get-NetTCPConnection -State Listen -LocalPort 5173 -ErrorAction SilentlyContinue | Select-Object -First 1
+```
+
+What it does:
+
+- loads local environment variables into the current process
+- checks whether backend and frontend are already running
+- starts only what is missing
+- opens the website in the browser
+
+The backend start command is:
+
+```powershell
+& .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+The frontend start command is:
+
+```powershell
+& 'npm.cmd' run dev -- --host 127.0.0.1 --port 5173
+```
+
+The browser open step is:
+
+```powershell
+Start-Process $siteUrl
+```
+
+So the expected user command is:
+
+```powershell
+.\run-website.ps1
+```
+
+## 7. Weight Tuning Script
+
+`backend/scripts/tune_heuristic_weights.py` is an offline calibration tool for score weights.
+
+The script works in two phases:
+
+1. call the live API once per sample case and collect candidate breakdowns
+2. score those same breakdowns with many random weight vectors without re-running translation
+
+That is why it is safe to test many values quickly after the candidate set has been collected.
+
+The script compares each candidate weight vector against an oracle utility function that emphasizes semantic quality more strongly than the current ranker.
+
+This is important because it lets you tune weights against a repeatable local objective instead of guessing.
+
+## 8. What To Tell Another LLM About This Project
+
+If you need to hand this project to another model, the important facts are:
+
+- The backend is a FastAPI inference service.
+- The translation model is `google/translategemma-4b-it`.
+- The system generates multiple candidates per request.
+- A heuristic scorer ranks candidates using entities, length, target script, tonality, semantic similarity, fluency, and confidence.
+- Punctuation drift was removed from the score.
+- Tonality is model-based, not word-list based.
+- The frontend is now intentionally minimal: input on one side, outputs on the other.
+- The best output is highlighted, and clicking any output shows its breakdown.
+
+## 9. File Map
+
+### Backend
+
+- [backend/app/main.py](backend/app/main.py)
+- [backend/app/core/settings.py](backend/app/core/settings.py)
+- [backend/app/core/schemas.py](backend/app/core/schemas.py)
+- [backend/app/services/model_adapter.py](backend/app/services/model_adapter.py)
+- [backend/app/services/pipeline.py](backend/app/services/pipeline.py)
+- [backend/app/services/scoring.py](backend/app/services/scoring.py)
+- [backend/scripts/tune_heuristic_weights.py](backend/scripts/tune_heuristic_weights.py)
+
+### Frontend
+
+- [frontend/src/App.tsx](frontend/src/App.tsx)
+- [frontend/src/App.css](frontend/src/App.css)
+- [frontend/src/main.tsx](frontend/src/main.tsx)
+
+### Launcher and deployment
+
+- [run-website.ps1](run-website.ps1)
+- [docker-compose.yml](docker-compose.yml)
+- [README.md](README.md)
+
+## 10. Current Implementation Status
+
+The current codebase is set up so that:
+
+- the website can be launched from one command
+- the backend loads local model artifacts when available
+- the frontend shows only the essential translation workflow
+- the heuristic explanation is visible only when a candidate is selected
+
+That is the current behavior of the repository as of this overview.
 - `rapidfuzz`
 - `transformers`
 - `sentencepiece`

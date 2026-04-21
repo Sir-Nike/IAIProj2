@@ -13,11 +13,12 @@ class TranslationRequest(BaseModel):
 
 
 class CandidateScore(BaseModel):
-    punctuation: float
     entities: float
     length: float
     target_script: float
     tonality: float
+    semantic: float
+    fluency: float
     confidence: float
     total: float
 

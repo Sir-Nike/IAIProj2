@@ -69,6 +69,21 @@ Open:
 
 - `http://127.0.0.1:5173`
 
+## Run Website In One Command
+
+From repository root:
+
+```powershell
+.\run-website.ps1
+```
+
+What it does:
+
+1. Loads `.env.local` (and `.env` if present) into the current process.
+2. Starts backend on `127.0.0.1:8000` if not already running.
+3. Starts frontend on `127.0.0.1:5173` if not already running.
+4. Opens `http://127.0.0.1:5173` in your browser.
+
 ## Deployment Without First-Run Model Download
 
 This repository now includes container deployment that preloads model weights at image build time.
